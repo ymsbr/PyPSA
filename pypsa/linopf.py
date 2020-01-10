@@ -19,11 +19,11 @@ Originally retrieved from nomopyomo ( -> 'no more Pyomo').
 """
 
 
-from .pf import (_as_snapshots, get_switchable_as_dense as get_as_dense)
-from .descriptors import (get_bounds_pu, get_extendable_i, get_non_extendable_i,
+from pypsa.pf import (_as_snapshots, get_switchable_as_dense as get_as_dense)
+from pypsa.descriptors import (get_bounds_pu, get_extendable_i, get_non_extendable_i,
                           expand_series, nominal_attrs, additional_linkports, Dict)
 
-from .linopt import (linexpr, write_bound, write_constraint, set_conref,
+from pypsa.linopt import (linexpr, write_bound, write_constraint, set_conref,
                      set_varref, get_con, get_var, join_exprs, run_and_read_cbc,
                      run_and_read_gurobi, run_and_read_glpk, define_constraints,
                      define_variables, align_with_static_component, define_binaries)
@@ -38,11 +38,12 @@ from tempfile import mkstemp
 import logging
 logger = logging.getLogger(__name__)
 
-lookup = pd.read_csv(os.path.join(os.path.dirname(__file__), 'variables.csv'),
+#lookup = pd.read_csv(os.path.join(os.path.dirname(__file__), 'variables.csv'),
+#                     index_col=['component', 'variable'])
+lookup = pd.read_csv('/home/ws/bw0928/miniconda3/envs/pypsa-eur/lib/python3.7/site-packages/PyPSA/pypsa/variables.csv',
                      index_col=['component', 'variable'])
-
-
-def define_nominal_for_extendable_variables(n, c, attr):
+# %%
+def define_nominal_for_extendable_variables(n, sns, c, attr):
     """
     Initializes variables for nominal capacities for a given component and a
     given attribute.
@@ -51,7 +52,8 @@ def define_nominal_for_extendable_variables(n, c, attr):
     ----------
     n : pypsa.Network
     c : str
-        network component of which the nominal capacity should be defined
+        network component of which the nominal capacity should be defined,
+        e.g. 'Generator'
     attr : str
         name of the variable, e.g. 'p_nom'
 
@@ -60,7 +62,7 @@ def define_nominal_for_extendable_variables(n, c, attr):
     if ext_i.empty: return
     lower = n.df(c)[attr+'_min'][ext_i]
     upper = n.df(c)[attr+'_max'][ext_i]
-    define_variables(n, lower, upper, c, attr)
+    define_variables(n, lower, upper, c, attr, axes=[sns, ext_i], spec='extendables')
 
 
 def define_dispatch_for_extendable_and_committable_variables(n, sns, c, attr):
@@ -71,6 +73,7 @@ def define_dispatch_for_extendable_and_committable_variables(n, sns, c, attr):
     Parameters
     ----------
     n : pypsa.Network
+    sns : snapshots
     c : str
         name of the network component
     attr : str
@@ -547,7 +550,7 @@ def define_objective(n, sns):
         terms = linexpr((cost, get_var(n, c, attr).loc[sns, cost.columns]))
         n.objective_f.write(join_exprs(terms))
     # investment
-    for c, attr in nominal_attrs.items():
+    for c, attr in nom_attr:
         cost = n.df(c)['capital_cost'][get_extendable_i(n, c)]
         if cost.empty: continue
         terms = linexpr((cost, get_var(n, c, attr)[cost.index]))
@@ -594,7 +597,7 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
     n.binaries_f.write("\nbinary\n")
 
     for c, attr in lookup.query('nominal and not handle_separately').index:
-        define_nominal_for_extendable_variables(n, c, attr)
+        define_nominal_for_extendable_variables(n, snapshots, c, attr)
         # define_fixed_variable_constraints(n, snapshots, c, attr, pnl=False)
     for c, attr in lookup.query('not nominal and not handle_separately').index:
         define_dispatch_for_non_extendable_variables(n, snapshots, c, attr)
@@ -655,7 +658,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         else:
             pnl[attr].loc[sns, :] = df.reindex(columns=pnl[attr].columns)
 
-    pop = not keep_references
+    
     def map_solution(c, attr):
         variables = get_var(n, c, attr, pop=pop)
         predefined = True
@@ -689,15 +692,20 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
             else:
                 n.sols[c].df[attr] = sol
 
+
+    pop = not keep_references
     n.sols = Dict()
     n.solutions = pd.DataFrame(index=n.variables.index, columns=['in_comp', 'pnl'])
     for c, attr in n.variables.index:
         map_solution(c, attr)
 
     # if nominal capcity was no variable set optimal value to nominal
-    for c, attr in lookup.query('nominal').index.difference(n.variables.index):
-        n.df(c)[attr+'_opt'] = n.df(c)[attr]
-
+    for c, attr in lookup.query('nominal').index:
+        if attr not in n.pnl(c).keys():
+            n.pnl(c)[attr] = pd.DataFrame(index=sns)
+        n.pnl(c)[attr+'_opt'] = get_switchable_as_dense(n, c, attr)
+        del n.pnl(c)[attr]
+        
     # recalculate storageunit net dispatch
     if not n.df('StorageUnit').empty:
         c = 'StorageUnit'
@@ -805,9 +813,6 @@ def network_lopf(n, snapshots=None, solver_name="cbc",
     solver_name : string
         Must be a solver name that pyomo recognises and that is
         installed, e.g. "glpk", "gurobi"
-    pyomo : bool, default True
-        Whether to use pyomo for building and solving the model, setting
-        this to False saves a lot of memory and time.
     solver_logfile : None|string
         If not None, sets the logfile option of the solver.
     solver_options : dictionary
