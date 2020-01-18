@@ -560,7 +560,7 @@ def run_and_read_cbc(n, problem_fn, solution_fn, solver_logfile,
     f = open(solution_fn,"r")
     data = f.readline()
     f.close()
-
+    import pdb; pdb.set_trace()
     if data.startswith("Optimal - objective value"):
         status = "ok"
         termination_condition = status

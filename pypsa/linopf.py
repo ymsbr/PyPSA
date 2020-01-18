@@ -19,11 +19,11 @@ Originally retrieved from nomopyomo ( -> 'no more Pyomo').
 """
 
 
-from pypsa.pf import (_as_snapshots, get_switchable_as_dense as get_as_dense)
-from pypsa.descriptors import (get_bounds_pu, get_extendable_i, get_non_extendable_i,
+from .pf import (_as_snapshots, get_switchable_as_dense as get_as_dense)
+from .descriptors import (get_bounds_pu, get_extendable_i, get_non_extendable_i,
                           expand_series, nominal_attrs, additional_linkports, Dict)
 
-from pypsa.linopt import (linexpr, write_bound, write_constraint, set_conref,
+from .linopt import (linexpr, write_bound, write_constraint, set_conref,
                      set_varref, get_con, get_var, join_exprs, run_and_read_cbc,
                      run_and_read_gurobi, run_and_read_glpk, define_constraints,
                      define_variables, align_with_static_component, define_binaries)
@@ -40,8 +40,8 @@ logger = logging.getLogger(__name__)
 
 lookup = pd.read_csv(os.path.join(os.path.dirname(__file__), 'variables.csv'),
                     index_col=['component', 'variable'])
-# %%
-def define_nominal_for_extendable_variables(n, sns, c, attr):
+
+def define_nominal_for_extendable_variables(n, c, attr, sns=None):
     """
     Initializes variables for nominal capacities for a given component and a
     given attribute.
@@ -54,13 +54,20 @@ def define_nominal_for_extendable_variables(n, sns, c, attr):
         e.g. 'Generator'
     attr : str
         name of the variable, e.g. 'p_nom'
+    sns : snapshots, default None
+        set of snapshots for which changes in nominal bounds are allowed. If
+        None (default) the nominal capacities will stay static. Otherwise a
+        pathway-optimization with the investment periods will be performed
 
     """
     ext_i = get_extendable_i(n, c)
     if ext_i.empty: return
     lower = n.df(c)[attr+'_min'][ext_i]
     upper = n.df(c)[attr+'_max'][ext_i]
-    define_variables(n, lower, upper, c, attr, axes=[sns, ext_i], spec='extendables')
+    if sns is None:
+        define_variables(n, lower, upper, c, attr)
+    else:
+        define_variables(n, lower, upper, c, attr, axes=[sns, ext_i])
 
 
 def define_dispatch_for_extendable_and_committable_variables(n, sns, c, attr):
@@ -556,7 +563,8 @@ def define_objective(n, sns):
 
 
 def prepare_lopf(n, snapshots=None, keep_files=False,
-                 extra_functionality=None, solver_dir=None):
+                 extra_functionality=None, solver_dir=None,
+                 investmentsteps=None):
     """
     Sets up the linear problem and writes it out to a lp file
 
@@ -594,9 +602,15 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
     n.bounds_f.write("\nbounds\n")
     n.binaries_f.write("\nbinary\n")
 
-    for c, attr in lookup.query('nominal and not handle_separately').index:
-        define_nominal_for_extendable_variables(n, snapshots, c, attr)
-        # define_fixed_variable_constraints(n, snapshots, c, attr, pnl=False)
+    if investmentsteps is None:
+        for c, attr in lookup.query('nominal and not handle_separately').index:
+            define_nominal_for_extendable_variables(n, c, attr)
+            # define_fixed_variable_constraints(n, snapshots, c, attr, pnl=False)
+    else:
+        for c, attr in lookup.query('nominal and not handle_separately').index:
+            define_nominal_for_extendable_variables(n, c, attr, investmentsteps)
+            # define_fixed_variable_constraints(n, snapshots, c, attr, pnl=True)
+
     for c, attr in lookup.query('not nominal and not handle_separately').index:
         define_dispatch_for_non_extendable_variables(n, snapshots, c, attr)
         define_dispatch_for_extendable_and_committable_variables(n, snapshots, c, attr)
@@ -661,25 +675,30 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         variables = get_var(n, c, attr, pop=pop)
         predefined = True
         if (c, attr) not in lookup.index:
+            # predefined refers to variables which are not from extra_functionalities
             predefined = False
-            n.sols[c] = n.sols[c] if c in n.sols else Dict(df=pd.DataFrame(), pnl={})
+            if c not in n.sols:
+                n.sols[c] = Dict(df=pd.DataFrame(), pnl={})
         n.solutions.at[(c, attr), 'in_comp'] = predefined
         if isinstance(variables, pd.DataFrame):
             # case that variables are timedependent
             n.solutions.at[(c, attr), 'pnl'] = True
             pnl = n.pnl(c) if predefined else n.sols[c].pnl
             values = variables.stack().map(variables_sol).unstack()
-            if c in n.passive_branch_components:
+            if c in n.passive_branch_components and attr == 'p':
                 set_from_frame(pnl, 'p0', values)
                 set_from_frame(pnl, 'p1', - values)
-            elif c == 'Link':
+            elif c == 'Link' and attr == 'p':
                 set_from_frame(pnl, 'p0', values)
                 for i in ['1'] + additional_linkports(n):
                     i_eff = '' if i == '1' else i
                     eff = get_as_dense(n, 'Link', f'efficiency{i_eff}', sns)
                     set_from_frame(pnl, f'p{i}', - values * eff)
             else:
-                set_from_frame(pnl, attr, values)
+                if attr == nominal_attrs[c]:
+                    set_from_frame(pnl, attr + '_opt', values)
+                else:
+                    set_from_frame(pnl, attr, values)
         else:
             # case that variables are static
             n.solutions.at[(c, attr), 'pnl'] = False
@@ -698,11 +717,9 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         map_solution(c, attr)
 
     # if nominal capcity was no variable set optimal value to nominal
-    for c, attr in lookup.query('nominal').index:
-        if attr not in n.pnl(c).keys():
-            n.pnl(c)[attr] = pd.DataFrame(index=sns)
-        n.pnl(c)[attr+'_opt'] = get_as_dense(n, c, attr)
-        del n.pnl(c)[attr]
+    for c, attr in lookup.query('nominal').index.difference(n.variables.index):
+        n.df(c)[attr+'_opt'] = n.df(c)[attr]
+
 
     # recalculate storageunit net dispatch
     if not n.df('StorageUnit').empty:
@@ -793,7 +810,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
                       .reindex(columns=n.buses.index, fill_value=0))
 
 
-def network_lopf(n, snapshots=None, solver_name="cbc",
+def network_lopf(n, snapshots=None, investmentsteps=None, solver_name="cbc",
          solver_logfile=None, extra_functionality=None,
          extra_postprocessing=None, formulation="kirchhoff",
          keep_references=False, keep_files=False,
@@ -876,8 +893,8 @@ def network_lopf(n, snapshots=None, solver_name="cbc",
     n.determine_network_topology()
 
     logger.info("Prepare linear problem")
-    fdp, problem_fn = prepare_lopf(n, snapshots, keep_files,
-                                   extra_functionality, solver_dir)
+    fdp, problem_fn = prepare_lopf(n, snapshots, keep_files, extra_functionality,
+                                   solver_dir, investmentsteps)
     fds, solution_fn = mkstemp(prefix='pypsa-solve', suffix='.sol', dir=solver_dir)
 
     if warmstart == True:
