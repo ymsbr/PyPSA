@@ -38,10 +38,8 @@ from tempfile import mkstemp
 import logging
 logger = logging.getLogger(__name__)
 
-#lookup = pd.read_csv(os.path.join(os.path.dirname(__file__), 'variables.csv'),
-#                     index_col=['component', 'variable'])
-lookup = pd.read_csv('/home/ws/bw0928/miniconda3/envs/pypsa-eur/lib/python3.7/site-packages/PyPSA/pypsa/variables.csv',
-                     index_col=['component', 'variable'])
+lookup = pd.read_csv(os.path.join(os.path.dirname(__file__), 'variables.csv'),
+                    index_col=['component', 'variable'])
 # %%
 def define_nominal_for_extendable_variables(n, sns, c, attr):
     """
@@ -658,7 +656,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         else:
             pnl[attr].loc[sns, :] = df.reindex(columns=pnl[attr].columns)
 
-    
+
     def map_solution(c, attr):
         variables = get_var(n, c, attr, pop=pop)
         predefined = True
@@ -703,9 +701,9 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
     for c, attr in lookup.query('nominal').index:
         if attr not in n.pnl(c).keys():
             n.pnl(c)[attr] = pd.DataFrame(index=sns)
-        n.pnl(c)[attr+'_opt'] = get_switchable_as_dense(n, c, attr)
+        n.pnl(c)[attr+'_opt'] = get_as_dense(n, c, attr)
         del n.pnl(c)[attr]
-        
+
     # recalculate storageunit net dispatch
     if not n.df('StorageUnit').empty:
         c = 'StorageUnit'
