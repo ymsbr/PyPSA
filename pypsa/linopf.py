@@ -769,6 +769,9 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
     for c, attr in sp:
         map_dual(c, attr)
 
+    #correct prices for snapshot weightings
+    n.buses_t.marginal_price.loc[sns] = n.buses_t.marginal_price.loc[sns].divide(n.snapshot_weightings.loc[sns],axis=0)
+
     # discard remaining if wanted
     if not keep_references:
         for c, attr in n.constraints.index.difference(sp):
@@ -814,7 +817,7 @@ def network_lopf(n, snapshots=None, investmentsteps=None, solver_name="cbc",
          solver_logfile=None, extra_functionality=None,
          extra_postprocessing=None, formulation="kirchhoff",
          keep_references=False, keep_files=False,
-         keep_shadowprices=['Bus', 'Line', 'GlobalConstraint'],
+         keep_shadowprices=['Bus', 'Line', 'Transformer', 'Link', 'GlobalConstraint'],
          solver_options=None, warmstart=False, store_basis=False,
          solver_dir=None):
     """
@@ -906,17 +909,20 @@ def network_lopf(n, snapshots=None, investmentsteps=None, solver_name="cbc",
     solve = eval(f'run_and_read_{solver_name}')
     res = solve(n, problem_fn, solution_fn, solver_logfile,
                 solver_options, keep_files, warmstart, store_basis)
+
     status, termination_condition, variables_sol, constraints_dual, obj = res
 
     if not keep_files:
         os.close(fdp); os.remove(problem_fn)
         os.close(fds); os.remove(solution_fn)
 
-    if "optimal" not in termination_condition:
-        logger.warning('Problem was not solved to optimality')
-        return status, termination_condition
-    else:
+    if status == "ok" and termination_condition == "optimal":
         logger.info('Optimization successful. Objective value: {:.2e}'.format(obj))
+    elif status == "warning" and termination_condition == "suboptimal":
+        logger.warning('Optimization solution is sub-optimal. Objective value: {:.2e}'.format(obj))
+    else:
+        logger.warning(f'Optimization failed with status {status} and termination condition {termination_condition}')
+        return status, termination_condition
 
     n.objective = obj
     assign_solution(n, snapshots, variables_sol, constraints_dual,
