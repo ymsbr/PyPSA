@@ -767,7 +767,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
     for c, attr in lookup.query('nominal').index.difference(n.variables.index):
         n.df(c)[attr+'_opt'] = n.df(c)[attr]
 
-    # clean pathway variables
+    # clean pathway variables if existent
     for c, attr in lookup.query('nominal').index:
         alternations = ['_opt', '_minus', 'plus']
         for a in alternations:
