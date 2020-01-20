@@ -647,6 +647,10 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
             define_nominal_for_extendable_variables(n, c, attr)
             # define_fixed_variable_constraints(n, snapshots, c, attr, pnl=False)
     else:
+        if isinstance(investment_steps, str):
+            # allow to pass a frequency:
+            investment_steps = pd.date_range(snapshots[0], snapshots[-1],
+                                             freq=investment_steps)
         for c, attr in lookup.query('nominal and not handle_separately').index:
             define_nominal_for_extendable_variables(n, c, attr, investment_steps)
             define_fixed_variable_constraints(n, investment_steps, c, attr, pnl=True)
@@ -763,6 +767,12 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
     for c, attr in lookup.query('nominal').index.difference(n.variables.index):
         n.df(c)[attr+'_opt'] = n.df(c)[attr]
 
+    # clean pathway variables
+    for c, attr in lookup.query('nominal').index:
+        alternations = ['_opt', '_minus', 'plus']
+        for a in alternations:
+            if attr + a in n.pnl(c).keys():
+                n.pnl(c)[attr + a].dropna(how='all', inplace=True)
 
     # recalculate storageunit net dispatch
     if not n.df('StorageUnit').empty:
