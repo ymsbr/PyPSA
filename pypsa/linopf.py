@@ -269,7 +269,8 @@ def define_ramp_limit_constraints(n, sns):
         status = get_var(n, c, 'status').loc[sns[1:], gens_i]
         status_prev = get_var(n, c, 'status').shift(1).loc[sns[1:], gens_i]
         lhs = linexpr((1, p[gens_i]), (-1, p_prev[gens_i]),
-                      (limit_start - limit_up, status_prev), (- limit_start, status))
+                      (limit_start - limit_up, status_prev),
+                      (- limit_start, status))
         define_constraints(n, lhs, '<=', 0, c, 'mu_ramp_limit_up', spec='com.')
 
     # fix down
@@ -293,7 +294,8 @@ def define_ramp_limit_constraints(n, sns):
         status = get_var(n, c, 'status').loc[sns[1:], gens_i]
         status_prev = get_var(n, c, 'status').shift(1).loc[sns[1:], gens_i]
         lhs = linexpr((1, p[gens_i]), (-1, p_prev[gens_i]),
-                      (limit_down - limit_shut, status), (limit_shut, status_prev))
+                      (limit_down - limit_shut, status),
+                      (limit_shut, status_prev))
         define_constraints(n, lhs, '>=', 0, c, 'mu_ramp_limit_down', spec='com.')
 
 
