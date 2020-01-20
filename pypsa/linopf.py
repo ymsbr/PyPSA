@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 lookup = pd.read_csv(os.path.join(os.path.dirname(__file__), 'variables.csv'),
                     index_col=['component', 'variable'])
 
-def define_nominal_for_extendable_variables(n, c, attr, sns=None):
+def define_nominal_for_extendable_variables(n, c, attr, investment_steps=None):
     """
     Initializes variables for nominal capacities for a given component and a
     given attribute.
@@ -54,7 +54,7 @@ def define_nominal_for_extendable_variables(n, c, attr, sns=None):
         e.g. 'Generator'
     attr : str
         name of the variable, e.g. 'p_nom'
-    sns : snapshots, default None
+    investment_steps : subset of snapshots, default None
         set of snapshots for which changes in nominal bounds are allowed. If
         None (default) the nominal capacities will stay static. Otherwise a
         pathway-optimization with the investment periods will be performed
@@ -64,10 +64,25 @@ def define_nominal_for_extendable_variables(n, c, attr, sns=None):
     if ext_i.empty: return
     lower = n.df(c)[attr+'_min'][ext_i]
     upper = n.df(c)[attr+'_max'][ext_i]
-    if sns is None:
+    if investment_steps is None:
         define_variables(n, lower, upper, c, attr)
     else:
-        define_variables(n, lower, upper, c, attr, axes=[sns, ext_i])
+        define_variables(n, lower, upper, c, attr, axes=[investment_steps, ext_i])
+
+
+# for pathway-optimization only, input attr is nominal capacity, e.g. 'p_nom'
+def define_construction_variables(n, c, attr, investment_steps):
+    ext_i = get_extendable_i(n, c)
+    if not ext_i.empty:
+        define_variables(n, 0, np.inf, c, attr + '_plus',
+                         axes=[investment_steps, ext_i])
+
+# for pathway-optimization only:
+def define_dismantling_variables(n, c, attr, investment_steps):
+    ext_i = get_extendable_i(n, c)
+    if not ext_i.empty:
+        define_variables(n, 0, np.inf, c, attr + '_minus',
+                         axes=[investment_steps, ext_i])
 
 
 def define_dispatch_for_extendable_and_committable_variables(n, sns, c, attr):
@@ -136,6 +151,9 @@ def define_dispatch_for_extendable_constraints(n, sns, c, attr):
     min_pu, max_pu = get_bounds_pu(n, c, sns, ext_i, attr)
     operational_ext_v = get_var(n, c, attr)[ext_i]
     nominal_v = get_var(n, c, nominal_attrs[c])[ext_i]
+    if n.variables.pnl[c, nominal_attrs[c]]:
+        nominal_v = nominal_v.reindex(sns, method='ffill')
+
     rhs = 0
 
     lhs, *axes = linexpr((max_pu, nominal_v), (-1, operational_ext_v),
@@ -191,6 +209,7 @@ def define_generator_status_variables(n, snapshots):
         com_i = com_i.difference(ext_i)
     if com_i.empty: return
     define_binaries(n, (snapshots, com_i), 'Generator', 'status')
+
 
 
 def define_committable_generator_constraints(n, snapshots):
@@ -276,6 +295,27 @@ def define_ramp_limit_constraints(n, sns):
         lhs = linexpr((1, p[gens_i]), (-1, p_prev[gens_i]),
                       (limit_down - limit_shut, status), (limit_shut, status_prev))
         define_constraints(n, lhs, '>=', 0, c, 'mu_ramp_limit_down', spec='com.')
+
+
+# for pathway optimization only
+def define_investment_constraints(n, c, attr, investment_steps):
+    # attr is nominal attribute, as 'p_nom'
+    # nominal(t) - nominal(t-1) - construction(t) + dismantle(t) = 0
+    ext_i = get_extendable_i(n, c)
+    if ext_i.empty:
+        return
+    nominal = get_var(n, c, attr)
+    construction = get_var(n, c, attr + '_plus')
+    dismantle = get_var(n, c, attr + '_minus')
+
+    # make auxiliary variable which is exactly the start_value
+    start = n.df(c)[nominal_attrs[c]][ext_i]
+    start_nominal = define_variables(n, start, start, 'investment', 'start')
+    previous_nominal = nominal.shift(1).fillna(start_nominal)
+
+    lhs = linexpr((1, nominal), (-1, construction), (1, dismantle), (-1, previous_nominal))
+    define_constraints(n, lhs, '==', 0, c, 'investment_constraints')
+
 
 def define_nodal_balance_constraints(n, sns):
     """
@@ -564,7 +604,7 @@ def define_objective(n, sns):
 
 def prepare_lopf(n, snapshots=None, keep_files=False,
                  extra_functionality=None, solver_dir=None,
-                 investmentsteps=None):
+                 investment_steps=None):
     """
     Sets up the linear problem and writes it out to a lp file
 
@@ -602,14 +642,17 @@ def prepare_lopf(n, snapshots=None, keep_files=False,
     n.bounds_f.write("\nbounds\n")
     n.binaries_f.write("\nbinary\n")
 
-    if investmentsteps is None:
+    if investment_steps is None:
         for c, attr in lookup.query('nominal and not handle_separately').index:
             define_nominal_for_extendable_variables(n, c, attr)
             # define_fixed_variable_constraints(n, snapshots, c, attr, pnl=False)
     else:
         for c, attr in lookup.query('nominal and not handle_separately').index:
-            define_nominal_for_extendable_variables(n, c, attr, investmentsteps)
-            # define_fixed_variable_constraints(n, snapshots, c, attr, pnl=True)
+            define_nominal_for_extendable_variables(n, c, attr, investment_steps)
+            define_fixed_variable_constraints(n, investment_steps, c, attr, pnl=True)
+            define_construction_variables(n, c, attr, investment_steps)
+            define_dismantling_variables(n, c, attr, investment_steps)
+            define_investment_constraints(n, c, attr, investment_steps)
 
     for c, attr in lookup.query('not nominal and not handle_separately').index:
         define_dispatch_for_non_extendable_variables(n, snapshots, c, attr)
@@ -770,7 +813,8 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         map_dual(c, attr)
 
     #correct prices for snapshot weightings
-    n.buses_t.marginal_price.loc[sns] = n.buses_t.marginal_price.loc[sns].divide(n.snapshot_weightings.loc[sns],axis=0)
+    n.buses_t.marginal_price.loc[sns] = n.buses_t.marginal_price.loc[sns]\
+                                .divide(n.snapshot_weightings.loc[sns], axis=0)
 
     # discard remaining if wanted
     if not keep_references:
@@ -813,7 +857,7 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
                       .reindex(columns=n.buses.index, fill_value=0))
 
 
-def network_lopf(n, snapshots=None, investmentsteps=None, solver_name="cbc",
+def network_lopf(n, snapshots=None, investment_steps=None, solver_name="cbc",
          solver_logfile=None, extra_functionality=None,
          extra_postprocessing=None, formulation="kirchhoff",
          keep_references=False, keep_files=False,
@@ -897,7 +941,7 @@ def network_lopf(n, snapshots=None, investmentsteps=None, solver_name="cbc",
 
     logger.info("Prepare linear problem")
     fdp, problem_fn = prepare_lopf(n, snapshots, keep_files, extra_functionality,
-                                   solver_dir, investmentsteps)
+                                   solver_dir, investment_steps)
     fds, solution_fn = mkstemp(prefix='pypsa-solve', suffix='.sol', dir=solver_dir)
 
     if warmstart == True:
