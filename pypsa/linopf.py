@@ -152,8 +152,11 @@ def define_dispatch_for_extendable_constraints(n, sns, c, attr):
     min_pu, max_pu = get_bounds_pu(n, c, sns, ext_i, attr)
     operational_ext_v = get_var(n, c, attr)[ext_i]
     nominal_v = get_var(n, c, nominal_attrs[c])[ext_i]
+    # case of pathway-optimizing:
     if n.variables.pnl[c, nominal_attrs[c]]:
         nominal_v = nominal_v.reindex(sns, method='ffill')
+        start_nominal = get_var(n, c, 'nominal_start')
+        nominal_v.fillna(start_nominal, inplace=True)
 
     rhs = 0
 
@@ -303,6 +306,7 @@ def define_ramp_limit_constraints(n, sns):
 # for pathway optimization only
 def define_investment_constraints(n, c, attr, investment_steps):
     # attr is nominal attribute, as 'p_nom'
+    # nominal(t) = nominal(t-1) + construction(t) - dismantle(t)
     # nominal(t) - nominal(t-1) - construction(t) + dismantle(t) = 0
     ext_i = get_extendable_i(n, c)
     if ext_i.empty:
@@ -313,7 +317,7 @@ def define_investment_constraints(n, c, attr, investment_steps):
 
     # make auxiliary variable which is exactly the start_value
     start = n.df(c)[nominal_attrs[c]][ext_i]
-    start_nominal = define_variables(n, start, start, 'investment', 'start')
+    start_nominal = define_variables(n, start, start, c, 'nominal_start')
     previous_nominal = nominal.shift(1).fillna(start_nominal)
 
     lhs = linexpr((1, nominal), (-1, construction), (1, dismantle), (-1, previous_nominal))
@@ -776,10 +780,11 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
 
     # clean pathway variables if existent
     for c, attr in lookup.query('nominal').index:
-        alternations = ['_opt', '_minus', 'plus']
+        alternations = ['_opt', '_minus', '_plus']
         for a in alternations:
             if attr + a in n.pnl(c).keys():
                 n.pnl(c)[attr + a].dropna(how='all', inplace=True)
+        n.pnl(c)[attr + '_opt'].fillna(n.df(c)[attr], inplace=True)
 
     # recalculate storageunit net dispatch
     if not n.df('StorageUnit').empty:
