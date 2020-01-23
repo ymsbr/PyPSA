@@ -779,12 +779,14 @@ def assign_solution(n, sns, variables_sol, constraints_dual,
         n.df(c)[attr+'_opt'] = n.df(c)[attr]
 
     # clean pathway variables if existent
-    for c, attr in lookup.query('nominal').index:
+    for c, attr in lookup.query('nominal').index & n.variables.index:
         alternations = ['_opt', '_minus', '_plus']
         for a in alternations:
             if attr + a in n.pnl(c).keys():
                 n.pnl(c)[attr + a].dropna(how='all', inplace=True)
-        n.pnl(c)[attr + '_opt'].fillna(n.df(c)[attr], inplace=True)
+        non_ext = n.df(c)[attr]
+        n.pnl(c)[attr+'_opt'] = n.pnl(c)[attr+'_opt'].reindex(columns=non_ext.index)\
+                                 .fillna(non_ext)
 
     # recalculate storageunit net dispatch
     if not n.df('StorageUnit').empty:
