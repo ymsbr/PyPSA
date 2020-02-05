@@ -354,7 +354,7 @@ def define_nodal_balance_constraints(n, sns):
 
     lhs = (pd.concat([bus_injection(*arg) for arg in args], axis=1)
            .groupby(axis=1, level=0)
-           .agg(lambda x: ''.join(x.values))
+           .sum()
            .reindex(columns=n.buses.index, fill_value=''))
     sense = '='
     rhs = ((- get_as_dense(n, 'Load', 'p_set', sns) * n.loads.sign)
@@ -510,7 +510,7 @@ def define_global_constraints(n, sns):
         gens = n.generators.query('carrier in @emissions.index')
         if not gens.empty:
             em_pu = gens.carrier.map(emissions)/gens.efficiency
-            em_pu = n.snapshot_weightings.to_frame() @ em_pu.to_frame('weightings').T
+            em_pu = n.snapshot_weightings.to_frame('weightings') @ em_pu.to_frame('weightings').T
             vals = linexpr((em_pu, get_var(n, 'Generator', 'p')[gens.index]),
                            as_pandas=False)
             lhs += join_exprs(vals)
@@ -957,7 +957,7 @@ def network_lopf(n, snapshots=None, investment_steps=None, solver_name="cbc",
         raise NotImplementedError("Only the kirchhoff formulation is supported")
 
     if n.generators.committable.any():
-        logger.warn("Unit commitment is not yet completely implemented for "
+        logger.warning("Unit commitment is not yet completely implemented for "
         "optimising without pyomo. Thus minimum up time, minimum down time, "
         "start up costs, shut down costs will be ignored.")
 
