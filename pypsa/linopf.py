@@ -1005,7 +1005,7 @@ def network_lopf(n, snapshots=None, investment_steps=None, solver_name="cbc",
 
 
 def ilopf(n, snapshots=None, msq_threshold=0.05, min_iterations=1,
-          max_iterations=100, **kwargs):
+          max_iterations=100, track_iterations=False, **kwargs):
     '''
     Iterative linear optimization updating the line parameters for passive
     AC and DC lines. This is helpful when line expansion is enabled. After each
@@ -1029,6 +1029,10 @@ def ilopf(n, snapshots=None, msq_threshold=0.05, min_iterations=1,
     max_iterations : integer, default 100
         Maximal numbder of iterations to run regardless whether msq_threshold
         is already undercut
+    track_iterations: bool, default False
+        If True, the intermediate branch capacities and values of the
+        objective function are recorded for each iteration. The values of
+        iteration 0 represent the initial state.
     **kwargs
         Keyword arguments of the lopf function which runs at each iteration
 
@@ -1058,18 +1062,33 @@ def ilopf(n, snapshots=None, msq_threshold=0.05, min_iterations=1,
                     f"{lines_err}")
         return lines_err
 
-    iteration = 0
+    def save_optimal_capacities(n, iteration, status):
+        for c, attr in pd.Series(nominal_attrs)[n.branch_components].items():
+            n.df(c)[f'{attr}_opt_{iteration}'] = n.df(c)[f'{attr}_opt']
+        setattr(n, f"status_{iteration}", status)
+        setattr(n, f"objective_{iteration}", n.objective)
+        n.iteration = iteration
+
+
+    if track_iterations:
+        for c, attr in pd.Series(nominal_attrs)[n.branch_components].items():
+            n.df(c)[f'{attr}_opt_0'] = n.df(c)[f'{attr}']
+    iteration = 1
     kwargs['store_basis'] = True
     diff = msq_threshold
     while diff >= msq_threshold or iteration < min_iterations:
-        if iteration >= max_iterations:
+        if iteration > max_iterations:
             logger.info(f'Iteration {iteration} beyond max_iterations '
                         f'{max_iterations}. Stopping ...')
             break
 
         s_nom_prev = n.lines.s_nom_opt if iteration else n.lines.s_nom
         kwargs['warmstart'] = bool(iteration and ('basis_fn' in n.__dir__()))
-        network_lopf(n, snapshots, **kwargs)
+        status, termination_condition = network_lopf(n, snapshots, **kwargs)
+        assert status == 'ok', (f'Optimization failed with status {status}'
+                                f'and termination {termination_condition}')
+        if track_iterations:
+            save_optimal_capacities(n, iteration, status)
         update_line_params(n, s_nom_prev)
         diff = msq_diff(n, s_nom_prev)
         iteration += 1
@@ -1078,6 +1097,7 @@ def ilopf(n, snapshots=None, msq_threshold=0.05, min_iterations=1,
     ext_links_i = get_extendable_i(n, 'Link')
     n.lines[['s_nom', 's_nom_extendable']] = n.lines['s_nom_opt'], False
     n.links[['p_nom', 'p_nom_extendable']] = n.links['p_nom_opt'], False
+    kwargs['warmstart'] = False
     network_lopf(n, snapshots, **kwargs)
     n.lines.loc[ext_i, 's_nom_extendable'] = True
     n.links.loc[ext_links_i, 'p_nom_extendable'] = True
