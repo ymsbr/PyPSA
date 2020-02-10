@@ -658,6 +658,7 @@ def prepare_lopf(n, snapshots=None, keep_files=False, skip_objective=False,
             # allow to pass a frequency:
             investment_steps = pd.date_range(snapshots[0], snapshots[-1],
                                              freq=investment_steps)
+        n.investment_steps = investment_steps
         for c, attr in lookup.query('nominal and not handle_separately').index:
             define_nominal_for_extendable_variables(n, c, attr, investment_steps)
             define_fixed_variable_constraints(n, investment_steps, c, attr, pnl=True)
